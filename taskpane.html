@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Intencje z FARY</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="fara.js"></script>
+<style>
+  :root { --tx:#222; --muted:#666; --line:#ddd; --acc:#6B5640; --bg:#fff; --soft:#f6f3ef; --err:#a4262c; --ok:#2e6b30; }
+  @media (prefers-color-scheme: dark) { :root { --tx:#eee; --muted:#aaa; --line:#444; --acc:#d2b48c; --bg:#1f1f1f; --soft:#2a2724; --err:#ff8a8a; --ok:#8fd18f; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:14px; font:13px/1.45 -apple-system, "Segoe UI", system-ui, sans-serif; color:var(--tx); background:var(--bg); }
+  h1 { font-size:15px; margin:0 0 10px; }
+  label.file { display:block; border:1px dashed var(--acc); border-radius:6px; padding:12px; text-align:center; cursor:pointer; background:var(--soft); }
+  label.file input { display:none; }
+  select, button { width:100%; font:inherit; padding:7px 8px; border-radius:5px; border:1px solid var(--line); background:var(--bg); color:var(--tx); }
+  button.primary { background:var(--acc); color:#fff; border-color:var(--acc); font-weight:600; cursor:pointer; margin-top:10px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { margin-top:10px; }
+  .muted { color:var(--muted); font-size:12px; }
+  details { margin-top:10px; }
+  details label { display:block; margin:4px 0; }
+  textarea { width:100%; height:44px; font:inherit; font-size:12px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--tx); }
+  #preview { margin-top:10px; max-height:260px; overflow:auto; border:1px solid var(--line); border-radius:5px; padding:6px 8px; font-size:11.5px; white-space:pre-wrap; }
+  #preview .d { font-weight:700; text-transform:uppercase; margin-top:6px; }
+  #preview .s { color:var(--muted); text-transform:uppercase; font-size:10px; }
+  #preview mark { background:#ffe14d; color:#000; }
+  #msg { margin-top:10px; }
+  #msg.err { color:var(--err); } #msg.ok { color:var(--ok); }
+  code { user-select:all; }
+</style>
+</head>
+<body>
+<h1>Intencje z FARY</h1>
+<label class="file" id="drop">
+  <input type="file" id="file" accept=".docx">
+  <strong>Wybierz wydruk z FARY (.docx)</strong><br>
+  <span class="muted" id="fname">„od niedzieli do niedzieli…”</span>
+</label>
+
+<div class="row" id="weekRow" hidden>
+  <select id="week"></select>
+</div>
+
+<details>
+  <summary>Stałe dopiski</summary>
+  <label><input type="checkbox" id="o_srodaWotywa"> Środa: wotywa o św. Józefie + litania</label>
+  <label><input type="checkbox" id="o_piatekAdoracja"> Piątek: adoracja do 19.30</label>
+  <label><input type="checkbox" id="o_majPazdziernik"> Maj/październik: nabożeństwo po wieczornej Mszy</label>
+  <label><input type="checkbox" id="o_pierwszeDniMiesiaca"> I czwartek/piątek/sobota, Dzień Fatimski</label>
+  <label><input type="checkbox" id="o_kolektaPole"> Niedziela: żółte pole „Kolekta …”</label>
+  <div class="muted">Uwaga tygodnia (pusta = bez uwagi):</div>
+  <textarea id="o_uwagaTygodnia"></textarea>
+</details>
+
+<div id="preview" hidden></div>
+<button class="primary" id="insert" disabled>Wstaw do dokumentu</button>
+<div class="muted">Zastępuje treść otwartego dokumentu (nagłówek i stopka zostają). Cofnij: ⌘Z / Ctrl+Z.</div>
+<div id="msg"></div>
+
+<script>
+(function () {
+  var days = null, weeks = [];
+  var KEYS = ['srodaWotywa', 'piatekAdoracja', 'majPazdziernik', 'pierwszeDniMiesiaca', 'kolektaPole', 'uwagaTygodnia'];
+  var $ = function (id) { return document.getElementById(id); };
+
+  function loadOpts() {
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem('fara-opcje') || '{}'); } catch (e) {}
+    KEYS.forEach(function (k) {
+      var v = k in saved ? saved[k] : Fara.DEFAULTS[k], el = $('o_' + k);
+      if (el.type === 'checkbox') el.checked = !!v; else el.value = v;
+    });
+  }
+  function opts() {
+    var o = {};
+    KEYS.forEach(function (k) { var el = $('o_' + k); o[k] = el.type === 'checkbox' ? el.checked : el.value.trim(); });
+    try { localStorage.setItem('fara-opcje', JSON.stringify(o)); } catch (e) {}
+    return o;
+  }
+  function msg(t, cls) { $('msg').textContent = t || ''; $('msg').className = cls || ''; }
+  function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+  function rebuild() {
+    if (!days) return;
+    var sel = $('week').value;
+    weeks = Fara.budujTygodnie(days, opts());
+    $('week').innerHTML = weeks.map(function (w, i) { return '<option value="' + i + '">' + esc(w.label) + '</option>'; }).join('');
+    if (sel && weeks[sel]) $('week').value = sel;
+    $('weekRow').hidden = weeks.length < 2;
+    preview();
+  }
+  function current() { return weeks[+$('week').value || 0]; }
+
+  function preview() {
+    var w = current();
+    if (!w) return;
+    $('preview').hidden = false;
+    $('preview').innerHTML = w.paragraphs.map(function (p) {
+      var cls = p.style === 'Dzień tygodnia' ? 'd' : p.style === 'Kolekta i sygnaturki' ? 's' : '';
+      var html = p.runs.map(function (r) {
+        var t = esc(r.t).replace(/\t/g, ' ');
+        if (r.b) t = '<b>' + t + '</b>';
+        if (r.i) t = '<i>' + t + '</i>';
+        if (r.hl) t = '<mark>' + t + '</mark>';
+        return t;
+      }).join('');
+      return '<div class="' + cls + '">' + html + '</div>';
+    }).join('');
+    $('insert').disabled = false;
+    msg('Sugerowana nazwa pliku: ' + w.plik);
+  }
+
+  $('file').addEventListener('change', function (e) {
+    var f = e.target.files[0];
+    if (!f) return;
+    $('fname').textContent = f.name;
+    msg('Wczytuję…');
+    f.arrayBuffer().then(function (buf) {
+      return Fara.readFaraDocx(buf, JSZip, DOMParser);
+    }).then(function (d) {
+      days = d; $('week').value = ''; rebuild();
+    }).catch(function (err) {
+      days = null; $('insert').disabled = true; $('preview').hidden = true;
+      msg(err.message || String(err), 'err');
+    });
+  });
+  $('week').addEventListener('change', preview);
+  document.querySelectorAll('details input, details textarea').forEach(function (el) { el.addEventListener('change', rebuild); });
+
+  $('insert').addEventListener('click', function () {
+    var w = current();
+    if (!w) return;
+    $('insert').disabled = true;
+    Word.run(function (ctx) {
+      ctx.document.body.insertOoxml(Fara.toFlatOpc(w.paragraphs), 'Replace');
+      return ctx.sync();
+    }).then(function () {
+      msg('Gotowe. Zapisz jako: ' + w.plik, 'ok');
+    }).catch(function (err) {
+      msg('Nie udało się wstawić: ' + (err.message || err), 'err');
+    }).then(function () { $('insert').disabled = false; });
+  });
+
+  Office.onReady(function () { loadOpts(); });
+})();
+</script>
+</body>
+</html>
